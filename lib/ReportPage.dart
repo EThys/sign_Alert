@@ -1,8 +1,14 @@
+import 'dart:async';
+
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:location/location.dart';
+import 'package:path_provider/path_provider.dart';
 import 'dart:io';
+
+import 'package:record/record.dart';
 
 class ReportPage extends StatefulWidget {
   const ReportPage({super.key});
@@ -29,6 +35,16 @@ class _ReportPageState extends State<ReportPage> {
   bool _isSubmitting = false;
   List<File> _selectedImages = [];
 
+  final AudioRecorder _audioRecorder = AudioRecorder();
+  bool _isRecording = false;
+  String? _audioPath;
+  Duration _recordDuration = Duration.zero;
+  Timer? _recordTimer;
+  // Variables pour la lecture audio
+  final AudioPlayer _audioPlayer = AudioPlayer();
+  PlayerState _playerState = PlayerState.stopped;
+  bool _isPlaying = false;
+
   // Données pour les menus déroulants
   final List<String> _problemTypes = [
     'Nuisance sonore',
@@ -44,6 +60,108 @@ class _ReportPageState extends State<ReportPage> {
     'Urgent',
     'Très urgent'
   ];
+
+  // Méthodes pour gérer l'enregistrement audio
+  Future<void> _startRecording() async {
+    try {
+      if (await _audioRecorder.hasPermission()) {
+        final directory = await getApplicationDocumentsDirectory();
+        final path = '${directory.path}/recording.m4a';
+
+        setState(() {
+          _isRecording = true;
+          _recordDuration = Duration.zero;
+        });
+
+        _recordTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+          setState(() {
+            _recordDuration += const Duration(seconds: 1);
+          });
+        });
+
+        await _audioRecorder.start(const RecordConfig(), path: path);
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Erreur lors de l\'enregistrement: $e')),
+      );
+      _stopRecording();
+    }
+  }
+
+  Future<void> _stopRecording() async {
+    _recordTimer?.cancel();
+    final path = await _audioRecorder.stop();
+
+    setState(() {
+      _isRecording = false;
+      if (path != null) {
+        _audioPath = path;
+      }
+    });
+  }
+
+  Future<void> _deleteRecording() async {
+    if (_audioPath != null) {
+      final file = File(_audioPath!);
+      if (await file.exists()) {
+        await file.delete();
+      }
+    }
+
+    setState(() {
+      _audioPath = null;
+      _recordDuration = Duration.zero;
+    });
+  }
+
+
+  // Méthode pour jouer/lire l'audio
+  Future<void> _playRecording() async {
+    if (_audioPath == null) return;
+
+    try {
+      setState(() {
+        _isPlaying = true;
+      });
+
+      await _audioPlayer.play(DeviceFileSource(_audioPath!));
+
+      _audioPlayer.onPlayerStateChanged.listen((PlayerState state) {
+        setState(() {
+          _playerState = state;
+          _isPlaying = state == PlayerState.playing;
+        });
+      });
+
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Erreur lors de la lecture: $e')),
+      );
+      setState(() {
+        _isPlaying = false;
+      });
+    }
+  }
+
+  // Méthode pour arrêter la lecture
+  Future<void> _stopPlaying() async {
+    await _audioPlayer.stop();
+    setState(() {
+      _isPlaying = false;
+    });
+  }
+
+  @override
+  void dispose() {
+    _audioPlayer.dispose();
+    _recordTimer?.cancel();
+    _audioRecorder.dispose();
+    _descriptionController.dispose();
+    _addressController.dispose();
+    super.dispose();
+  }
+
 
   Future<void> _getImage() async {
     final XFile? image = await _picker.pickImage(source: ImageSource.gallery);
@@ -91,6 +209,87 @@ class _ReportPageState extends State<ReportPage> {
     setState(() {
       _selectedImages.removeAt(index);
     });
+  }
+
+  // Widget pour la section audio
+  Widget _buildAudioRecordingSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Enregistrement audio (optionnel)',
+            style: GoogleFonts.poppins(fontWeight: FontWeight.w500)),
+        SizedBox(height: 8),
+        Container(
+          decoration: BoxDecoration(
+            border: Border.all(color: Colors.grey[300]!),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          padding: EdgeInsets.all(12),
+          child: Column(
+            children: [
+              if (_audioPath != null)
+                Column(
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.audiotrack, color: Colors.blue),
+                        SizedBox(width: 10),
+                        Text('Enregistrement (${_recordDuration.inSeconds}s)'),
+                        Spacer(),
+                        if (!_isPlaying)
+                          IconButton(
+                            icon: Icon(Icons.play_arrow, color: Colors.green),
+                            onPressed: _playRecording,
+                          )
+                        else
+                          IconButton(
+                            icon: Icon(Icons.stop, color: Colors.red),
+                            onPressed: _stopPlaying,
+                          ),
+                        IconButton(
+                          icon: Icon(Icons.delete, color: Colors.red),
+                          onPressed: _deleteRecording,
+                        ),
+                      ],
+                    ),
+                    if (_isPlaying)
+                      LinearProgressIndicator(
+                        backgroundColor: Colors.grey[300],
+                        valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
+                      ),
+                  ],
+                )
+              else if (_isRecording)
+                Row(
+                  children: [
+                    Icon(Icons.mic, color: Colors.red),
+                    SizedBox(width: 10),
+                    Text('Enregistrement... (${_recordDuration.inSeconds}s)'),
+                    Spacer(),
+                    IconButton(
+                      icon: Icon(Icons.stop, color: Colors.red),
+                      onPressed: _stopRecording,
+                    ),
+                  ],
+                )
+              else
+                Row(
+                  children: [
+                    Icon(Icons.mic_none, color: Colors.grey),
+                    SizedBox(width: 10),
+                    Text('Aucun enregistrement'),
+                    Spacer(),
+                    IconButton(
+                      icon: Icon(Icons.mic, color: Colors.green),
+                      onPressed: _startRecording,
+                    ),
+                  ],
+                ),
+            ],
+          ),
+        ),
+      ],
+    );
   }
 
   Widget _buildImageUploadSection() {
@@ -234,12 +433,51 @@ class _ReportPageState extends State<ReportPage> {
     }
   }
 
+  // Future<void> _submitReport() async {
+  //   if (!_formKey.currentState!.validate()) return;
+  //
+  //   setState(() {
+  //     _isSubmitting = true;
+  //   });
+  //
+  //   // Simuler un envoi au serveur
+  //   await Future.delayed(const Duration(seconds: 2));
+  //
+  //   setState(() {
+  //     _isSubmitting = false;
+  //   });
+  //
+  //   ScaffoldMessenger.of(context).showSnackBar(
+  //     SnackBar(
+  //       content: const Text('Signalement envoyé avec succès!'),
+  //       backgroundColor: Colors.green[700],
+  //       behavior: SnackBarBehavior.floating,
+  //     ),
+  //   );
+  //
+  //   Navigator.pop(context);
+  // }
+
+  // Dans votre méthode _submitReport, ajoutez l'audio aux données envoyées
   Future<void> _submitReport() async {
     if (!_formKey.currentState!.validate()) return;
 
     setState(() {
       _isSubmitting = true;
     });
+
+    // Créez un objet avec toutes les données du formulaire
+    final reportData = {
+      'problemType': _problemType,
+      'description': _descriptionController.text,
+      'address': _addressController.text,
+      'location': _locationText,
+      'urgency': _urgencyLevel,
+      'anonymous': _anonymousReport,
+      'images': _selectedImages,
+      'audioPath': _audioPath, // Ajoutez le chemin de l'audio
+      // ... autres champs ...
+    };
 
     // Simuler un envoi au serveur
     await Future.delayed(const Duration(seconds: 2));
@@ -259,12 +497,6 @@ class _ReportPageState extends State<ReportPage> {
     Navigator.pop(context);
   }
 
-  @override
-  void dispose() {
-    _descriptionController.dispose();
-    _addressController.dispose();
-    super.dispose();
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -369,7 +601,8 @@ class _ReportPageState extends State<ReportPage> {
                 },
               ),
               const SizedBox(height: 20),
-
+              _buildAudioRecordingSection(),
+              const SizedBox(height: 20),
               // Niveau d'urgence
               _buildSectionTitle('Niveau d\'urgence'),
               _buildDropdown(
